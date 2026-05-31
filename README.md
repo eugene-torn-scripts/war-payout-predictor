@@ -9,13 +9,15 @@ The formula isn't published by Torn. It was **reverse-engineered** by fitting
 `2025-05-31`, pulled from the Torn API) with a multiplicative regression. Two
 models, picked automatically:
 
-- **Score model** — when you know your war score (mid/post-war). **R² = 0.924**,
-  median error **14%**. Most accurate.
-- **Roster model** — pre-war planning, score unknown; driven by participation
-  instead. **R² = 0.893**, median error 15%.
+- **Score model** — when you know your war score (mid/post-war). **R² = 0.915**,
+  median error **16%**. Most accurate. Keys off score + how many members actually
+  *fought* (≥10 hits) rather than enlisted roster.
+- **Roster model** — pre-war planning, score unknown; driven by roster size and
+  participation. **R² = 0.893**, median error 15%.
 
-Both are **strictly monotonic** — more rank, members, score, participation or a
-win never lowers the prediction.
+Both are **strictly monotonic** and floored at the minimum cache (1 Small Arms,
+~$115m). Blown-out / very-low-participation factions land near that floor — the
+tool flags them.
 
 ## Install
 
@@ -33,11 +35,13 @@ full-screen on mobile / PDA).
 Reward is **multiplicative** — each factor scales the total:
 
 ```
-score known:   value = Base × Rank × Win × members^0.20 × score^0.44 × n10^0.11
+score known:   value = Base × Rank × Win × score^0.48 × fighters^0.20
 score unknown: value = Base × Rank × Win × members^0.68 × (p+0.05)^0.49
 ```
 
-where `n10` = members who landed **≥10 scoring war hits** and `p` = `n10` ÷ enlisted.
+where `fighters` = members who landed **≥10 scoring war hits** and `p` = `fighters` ÷ enlisted.
+The score model deliberately uses *fighters*, not enlisted roster — the cache reflects who
+actually fought, so a faction that fields 3 of 90 gets a near-minimum cache.
 
 ### What drives the payout
 
@@ -46,9 +50,8 @@ where `n10` = members who landed **≥10 scoring war hits** and `p` = `n10` ÷ e
 | **Rank** | Biggest lever — each tier ≈ 1.7× the one below (Unranked → Diamond III spans ×0.42 → ×3.0 of Gold I). |
 | **War score** | The strongest effort signal. It **absorbs participation** — once you know the score, the fraction-of-members metric adds nothing. |
 | **Win / Loss** | Winning ≈ **×2.24** (roster model). In the score model it's smaller (≈×1.75) — the *pure* win bonus, since score already reflects most of the win/loss gap. |
-| **Faction size** | Power law (`members^0.68` roster / `^0.23` score) — **not** the often-quoted "+1% per member". |
-| **Participation** | Matters by **producing score**: more participation → more score → bigger cache. The roster-model term `(p+0.05)^0.49` is strictly increasing — more participation never lowers the payout. |
-| **Hit spread** | At equal score, spreading hits across more members pays a little more (`n10^0.11`): 100 members × 25 hits beats 10 × 250 by ≈+28%. Small next to total effort, but real. |
+| **Faction size** | In the roster model, a power law `members^0.68` — **not** the often-quoted "+1% per member". The score model ignores enlisted roster entirely (only who *fought* matters). |
+| **Participation / who fought** | The score model uses the count of members with ≥10 hits (`fighters^0.20`): at equal score, 100 fighters beats 10 by ≈+60%. More participation always helps — it raises both score and fighter count. |
 
 ### What's *not* modelled
 
@@ -69,7 +72,8 @@ The `collector/` directory holds the full pipeline (Python, stdlib only):
 | `fit.py` | Multiplicative OLS; compares size specifications; prints the per-rank table. |
 | `fit_final.py` | Earlier single-model fit + backtest (superseded by `fit_v2.py`). |
 | `fit_v2.py` | Two-model fit (score & roster); superseded by `fit_v3.py`. |
-| `fit_v3.py` | Final fit — adds the hit-spread term + confidence bands; writes `data/model.json`. |
+| `fit_v3.py` | Adds hit-spread term + confidence bands (superseded by `fit_v4.py`). |
+| `fit_v4.py` | Final fit — score model keyed on fighters not roster (fixes blowout over-prediction); writes `data/model.json`. |
 
 The raw dataset (`data/reports.jsonl`, ~6 MB) is git-ignored but fully
 regenerable: point `crawl.py` at a Torn API key (Public scope is enough — it
