@@ -18,9 +18,13 @@ cache = Base(rank) × 2^win × (1 + 1%·(members−10)) × Participation(×0–3
   a dominant one approaches ×3.
 - **Base(rank)** is fitted and is the dominant lever.
 
+On top of the wiki factors, the score model adds the **fighter counts** (members
+with ≥10 hits) on both sides — a refinement beyond the wiki's single modifier that
+lifts accuracy to **R² = 0.945** (median error **13%**, 99% within 2×).
+
 Two modes, picked automatically:
-- **Score model** — both war scores known (mid/post-war). **R² = 0.909**, median
-  error **17%**. Participation from score-share.
+- **Score model** — both war scores + opponent fighter count known (mid/post-war).
+  **R² = 0.945**, median error **13%**. Participation from score-share + fighters.
 - **Roster model** — pre-war, scores unknown. **R² = 0.831**. Participation
   estimated from the ≥10-hit member fraction (`3·p^0.36`).
 
@@ -42,17 +46,18 @@ full-screen on mobile / PDA).
 Reward is **multiplicative** — the documented Torn-wiki factors, with fitted constants:
 
 ```
-cache = Base(rank) × 2^win × (1 + 1%·(members−10)) × Participation(×0–3)
+cache = Base(rank) × 2^win × (1 + 1%·(members−10)) × Participation(×0–3) × fighter terms
 ```
 
 ### What drives the payout
 
 | Factor | Effect |
 |---|---|
-| **Base (rank)** | Biggest lever — fitted per rank/division, roughly doubling every couple of ranks (Gold I base ≈ $0.22b; Diamond ≈ $0.6–0.8b). |
+| **Base (rank)** | Biggest lever — fitted per rank/division, roughly doubling every couple of ranks. |
 | **Win / Loss** | **×2 / ×1** — the wiki value, fixed. |
 | **Faction size** | **+1% per member** beyond the 10-member minimum — the wiki value, fixed (a small lever). |
-| **Participation** | **×0–×3**, from your **score-share vs the opponent** (the wiki mechanic). 5% share → ×0.3 (dominated → floor), ~50%+ → ×2.9–3.0. Pre-war it's estimated from the ≥10-hit member fraction as `3·p^0.36`. |
+| **Participation** | **×0–×3**, from your **score-share vs the opponent** (the wiki mechanic). ~5% share → ×0.4 (dominated → floor), ≥70% → ×3. Pre-war it's estimated from the ≥10-hit member fraction as `3·p^0.36`. |
+| **Fighter counts** | *Beyond the wiki:* members with ≥10 hits on each side (`(yours/40)^0.24 × (theirs/40)^0.09`). Bigger fights pay a little more; lifts R² from 0.91 → 0.945. |
 
 ### What's *not* modelled
 
@@ -75,7 +80,8 @@ The `collector/` directory holds the full pipeline (Python, stdlib only):
 | `fit_v2.py` | Two-model fit (score & roster); superseded by `fit_v3.py`. |
 | `fit_v3.py` | Adds hit-spread term + confidence bands (superseded by `fit_v4.py`). |
 | `fit_v4.py` | Score model keyed on fighters not roster (superseded by `fit_v5.py`). |
-| `fit_v5.py` | Final fit — imposes the wiki structure (win 2×, +1%/member, ×0–3 score-share participation, per-rank base); writes `data/model.json`. |
+| `fit_v5.py` | Wiki-structure fit (score-share participation); superseded by `fit_v6.py`. |
+| `fit_v6.py` | Final fit — wiki structure + both sides' fighter counts (R²=0.945); writes `data/model.json`. |
 
 The raw dataset (`data/reports.jsonl`, ~6 MB) is git-ignored but fully
 regenerable: point `crawl.py` at a Torn API key (Public scope is enough — it
