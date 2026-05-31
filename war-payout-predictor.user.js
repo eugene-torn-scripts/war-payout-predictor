@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         War Payout Predictor
 // @namespace    https://github.com/eugene-torn-scripts/war-payout-predictor
-// @version      1.1.0
-// @description  Predict the cash value of a Torn ranked-war cache from rank, win/loss, faction size, war score and participation — formula reverse-engineered from ~9,700 recent wars. Desktop + Torn PDA.
+// @version      1.2.0
+// @description  Predict the cash value of a Torn ranked-war cache from rank, win/loss, faction size, war score and participation (incl. hit-spread bonus) — formula reverse-engineered from ~9,700 recent wars. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
 // @grant        none
@@ -33,7 +33,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.1.0";
+    const VERSION = "1.2.0";
 
     // ════════════════════════════════════════════════════════════
     //  MODEL — two multiplicative (log-linear) fits on 9,699 recent
@@ -42,39 +42,41 @@
     //  more of any input never lowers the predicted payout.
     //
     //  SCORE model (use when the war score is known — mid/post-war):
-    //    value = exp(I) · RANK[rank] · exp(WON·won) · members^ENL · score^SCORE
-    //    R²=0.922, median error 14%, within 1.5x for 91% of wars.
+    //    value = exp(I) · RANK · exp(WON·won) · members^ENL · score^SCORE · n10^N10
+    //    R²=0.924, median error 14%, within 1.5x for 91% of wars.
+    //    n10 = number of members with ≥10 war hits (the hit-spread bonus:
+    //    at equal score, hits spread across more members pay a bit more).
     //
     //  ROSTER model (pre-war planning, score unknown):
-    //    value = exp(I) · RANK[rank] · exp(WON·won) · members^ENL · (p+ε)^PART
+    //    value = exp(I) · RANK · exp(WON·won) · members^ENL · (p+ε)^PART
     //    R²=0.893, median error 15%.  p = fraction of enlisted with ≥10 hits.
     //
-    //  Score is the strongest "effort" signal — it absorbs participation%
-    //  (once score is known, participation% adds nothing), which is why the
-    //  score model is more accurate. Participation still matters: it drives
-    //  score. Caches are valued at CACHE_PRICES; absolute $ tracks the live
-    //  market, the multipliers don't.
+    //  Score is the strongest "effort" signal — it absorbs most of participation
+    //  (more participation → more score), so the score model is more accurate.
+    //  The small leftover is the n10 spread bonus. BAND = multiplicative factor
+    //  covering ~68% of wars (the prediction's 1σ-ish uncertainty). Caches are
+    //  valued at CACHE_PRICES; absolute $ tracks the live market, multipliers don't.
     // ════════════════════════════════════════════════════════════
 
     const FIT = { ROWS: 9699, CUTOFF: "2025-05-31" };
     const PART_EPS = 0.05;
 
     const SCORE_MODEL = {
-        INT: 15.396978, WON: 0.560342, ENL: 0.232371, SCORE: 0.507741,
-        R2: 0.922, ERR: 14,
+        INT: 15.812400, WON: 0.565000, ENL: 0.203400, SCORE: 0.435700, N10: 0.105900,
+        R2: 0.924, ERR: 14, BAND: 1.236,
         RANK: {
-            "Unranked": 0.468, "Bronze": 0.498, "Bronze I": 0.548, "Bronze II": 0.625,
-            "Bronze III": 0.654, "Silver": 0.640, "Silver I": 0.719, "Silver II": 0.810,
-            "Silver III": 0.879, "Gold": 0.891, "Gold I": 1.000, "Gold II": 1.102,
-            "Gold III": 1.206, "Platinum": 1.227, "Platinum I": 1.368, "Platinum II": 1.530,
-            "Platinum III": 1.744, "Diamond": 1.914, "Diamond I": 2.048, "Diamond II": 2.252,
-            "Diamond III": 2.881,
+            "Unranked": 0.469, "Bronze": 0.491, "Bronze I": 0.540, "Bronze II": 0.617,
+            "Bronze III": 0.646, "Silver": 0.636, "Silver I": 0.715, "Silver II": 0.806,
+            "Silver III": 0.877, "Gold": 0.890, "Gold I": 1.000, "Gold II": 1.105,
+            "Gold III": 1.209, "Platinum": 1.233, "Platinum I": 1.378, "Platinum II": 1.548,
+            "Platinum III": 1.759, "Diamond": 1.945, "Diamond I": 2.079, "Diamond II": 2.333,
+            "Diamond III": 2.899,
         },
     };
 
     const ROSTER_MODEL = {
         INT: 18.280073, WON: 0.804268, ENL: 0.678625, PART: 0.487226,
-        R2: 0.893, ERR: 15,
+        R2: 0.893, ERR: 15, BAND: 1.254,
         RANK: {
             "Unranked": 0.424, "Bronze": 0.431, "Bronze I": 0.471, "Bronze II": 0.543,
             "Bronze III": 0.573, "Silver": 0.605, "Silver I": 0.674, "Silver II": 0.765,
@@ -100,10 +102,11 @@
     //  PREDICTION
     // ════════════════════════════════════════════════════════════
 
-    // If `score` > 0, uses the high-accuracy score model; otherwise falls back
-    // to the roster model driven by participation `p` (fraction of enlisted
-    // with ≥10 hits). Returns { value, model, factors }.
-    function predict({ rank, won, enlisted, score, p }) {
+    // `n10` = members who landed ≥10 war hits. If `score` > 0, uses the
+    // high-accuracy score model (which adds a spread bonus from n10); otherwise
+    // falls back to the roster model driven by participation p = n10/members.
+    // Returns { value, model, factors, band }.
+    function predict({ rank, won, enlisted, score, n10 }) {
         const enl = Math.max(1, enlisted);
         if (score && score > 0) {
             const m = SCORE_MODEL;
@@ -112,10 +115,11 @@
             const winF = won ? Math.exp(m.WON) : 1;
             const sizeF = Math.pow(enl, m.ENL);
             const scoreF = Math.pow(score, m.SCORE);
+            const spreadF = Math.pow(Math.max(n10, 1), m.N10);
             return {
-                value: base * rankF * winF * sizeF * scoreF,
-                model: "score",
-                factors: { base, rank: rankF, win: winF, size: sizeF, score: scoreF },
+                value: base * rankF * winF * sizeF * scoreF * spreadF,
+                model: "score", band: m.BAND,
+                factors: { base, rank: rankF, win: winF, size: sizeF, score: scoreF, spread: spreadF },
             };
         }
         const m = ROSTER_MODEL;
@@ -123,10 +127,11 @@
         const rankF = m.RANK[rank] != null ? m.RANK[rank] : 1;
         const winF = won ? Math.exp(m.WON) : 1;
         const sizeF = Math.pow(enl, m.ENL);
-        const partF = Math.pow(Math.min(1, p) + PART_EPS, m.PART);
+        const p = Math.min(1, n10 / enl);
+        const partF = Math.pow(p + PART_EPS, m.PART);
         return {
             value: base * rankF * winF * sizeF * partF,
-            model: "roster",
+            model: "roster", band: m.BAND,
             factors: { base, rank: rankF, win: winF, size: sizeF, part: partF },
         };
     }
@@ -545,40 +550,42 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
         renderResult(box) {
             const s = this.state;
             const enl = Math.max(1, s.enlisted);
-            const p = enl > 0 ? Math.min(1, s.hitters / enl) : 0;
+            const n10 = Math.min(s.hitters, enl);
+            const p = enl > 0 ? Math.min(1, n10 / enl) : 0;
             const score = s.score === "" ? 0 : s.score;
-            const { value, model, factors } = predict({ rank: s.rank, won: s.won, enlisted: enl, score, p });
+            const { value, model, factors, band } = predict({ rank: s.rank, won: s.won, enlisted: enl, score, n10 });
 
-            const lo = value / 1.35, hi = value * 1.35;
+            const lo = value / band, hi = value * band;
             const pctEl = document.getElementById("wpp-pct");
-            if (pctEl) pctEl.textContent = `participation p = ${(p * 100).toFixed(0)}%`;
+            if (pctEl) pctEl.textContent = `participation = ${(p * 100).toFixed(0)}% of enlisted`;
 
             const usingScore = model === "score";
             const pill = usingScore
                 ? `<span class="wpp-modepill score">score model · ±${SCORE_MODEL.ERR}%</span>`
                 : `<span class="wpp-modepill roster">roster model · ±${ROSTER_MODEL.ERR}%</span>`;
 
-            const effortRow = usingScore
-                ? `<tr><td>× Score (${Number(score).toLocaleString()})</td><td>×${factors.score.toFixed(1)}</td></tr>`
+            const effortRows = usingScore
+                ? `<tr><td>× Score (${Number(score).toLocaleString()})</td><td>×${factors.score.toFixed(1)}</td></tr>
+                   <tr><td>× Spread (${n10} hit ≥10)</td><td>×${factors.spread.toFixed(2)}</td></tr>`
                 : `<tr><td>× Participation (${(p * 100).toFixed(0)}%)</td><td>×${factors.part.toFixed(2)}</td></tr>`;
 
             box.innerHTML = `
 <div class="wpp-big">${fmtMoney(value)}${pill}</div>
-<div class="wpp-range">predicted cache value · likely ${fmtMoney(lo)} – ${fmtMoney(hi)}</div>
+<div class="wpp-range">best estimate · ~⅔ of real wars fall in ${fmtMoney(lo)} – ${fmtMoney(hi)}</div>
 <table class="wpp-breakdown">
   <tr><td>Base unit</td><td>${fmtMoney(factors.base)}</td></tr>
   <tr><td>× Rank (${s.rank})</td><td>×${factors.rank.toFixed(3)}</td></tr>
   <tr><td>× Result (${s.won ? "Win" : "Loss"})</td><td>×${factors.win.toFixed(2)}</td></tr>
   <tr><td>× Size (${enl} members)</td><td>×${factors.size.toFixed(2)}</td></tr>
-  ${effortRow}
+  ${effortRows}
   <tr class="total"><td>= Predicted faction cache</td><td>${fmtMoney(value)}</td></tr>
 </table>
 <div class="wpp-note">${usingScore
-    ? `Using the <b>score model</b> (most accurate — ${SCORE_MODEL.R2 * 100}% R²). `
-    : `No score entered → using the <b>roster model</b> for pre-war estimate (${ROSTER_MODEL.R2 * 100}% R²). Enter your war score for a sharper number. `}
-  Faction-level gross cache value at current market prices; most wars land within ±35%.
-  Unusual ones (big underdog or loss-streak bonus — not modelled) can be up to ~2× off.
-  This is the <b>faction total</b>, not your personal cut.</div>`;
+    ? `Using the <b>score model</b> (most accurate — ${(SCORE_MODEL.R2 * 100).toFixed(1)}% R², median error ${SCORE_MODEL.ERR}%). `
+    : `No score entered → <b>roster model</b> pre-war estimate (${(ROSTER_MODEL.R2 * 100).toFixed(1)}% R²). Enter your war score for a sharper number. `}
+  The range above is the model's typical spread (≈⅔ of wars); it's wide because the cache itself is
+  lumpy (whole caches) and unmodelled <b>underdog</b> / <b>loss-streak</b> bonuses move individual wars.
+  Faction gross at current market prices — not your personal cut.</div>`;
         },
 
         // ---- Legend tab -----------------------------------------------------
@@ -602,18 +609,25 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
   <ul>
     <li><span class="wpp-pill">score</span> If you enter your <b>war score</b> — the most accurate
        (R²&nbsp;${SCORE_MODEL.R2}, median error ${SCORE_MODEL.ERR}%). Use during or after a war.
-       <br><code>value = Base × Rank × Win × members^${SCORE_MODEL.ENL} × score^${SCORE_MODEL.SCORE}</code></li>
+       <br><code>value = Base × Rank × Win × members^${SCORE_MODEL.ENL} × score^${SCORE_MODEL.SCORE} × n10^${SCORE_MODEL.N10}</code></li>
     <li><span class="wpp-pill">roster</span> If score is blank — a pre-war estimate
        (R²&nbsp;${ROSTER_MODEL.R2}, median error ${ROSTER_MODEL.ERR}%) driven by participation instead.
        <br><code>value = Base × Rank × Win × members^${ROSTER_MODEL.ENL} × (p+${PART_EPS})^${ROSTER_MODEL.PART}</code></li>
   </ul>
+  <p>where <code>n10</code> = members who landed ≥10 war hits and <code>p</code> = n10 ÷ enlisted.</p>
 
   <div class="wpp-legend-h">Score is the strongest signal</div>
-  <p>War <b>score</b> (your faction's total) turned out to be the single best predictor of effort —
-     it captures hit volume, not just headcount. Crucially, <b>once you know the score, the
-     "fraction of members participating" adds nothing</b>: score already encodes it. So participation
-     matters very much — but it matters <i>by producing score</i>. More participation → more score →
-     bigger cache. There is no point where more participation lowers the payout.</p>
+  <p>War <b>score</b> (your faction's total) is the single best predictor of effort — it captures hit
+     volume, not just headcount. It absorbs <i>most</i> of participation: more participation → more
+     score → bigger cache, so participation matters mainly <b>by producing score</b>. More is always
+     better — there is no point where more participation lowers the payout.</p>
+
+  <div class="wpp-legend-h">Hit spread (score model)</div>
+  <p>At the <i>same</i> score, it still matters slightly <b>how the hits are spread</b>: 100 members
+     making 25 hits each beats 10 members making 250 each. That residual bonus is
+     <code>n10^${SCORE_MODEL.N10}</code> — so ${"10×"} more members hitting (e.g. 10 → 100) is worth about
+     <b>×${Math.pow(10, SCORE_MODEL.N10).toFixed(2)}</b> (≈+${Math.round((Math.pow(10, SCORE_MODEL.N10) - 1) * 100)}%).
+     Small next to total effort, but real and statistically significant.</p>
 
   <div class="wpp-legend-h">Rank <span class="wpp-pill">biggest lever</span></div>
   <p>Each tier is worth roughly <b>1.7× the one below</b>. Within a tier, divisions climb
@@ -644,6 +658,15 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
     <li>p = 60% → ×${Math.pow(0.60 + PART_EPS, ROSTER_MODEL.PART).toFixed(2)}</li>
     <li>p = 100% → ×${Math.pow(1.00 + PART_EPS, ROSTER_MODEL.PART).toFixed(2)}</li>
   </ul>
+
+  <div class="wpp-legend-h">Accuracy & the range</div>
+  <p>The calculator shows a <b>best estimate</b> plus a range that ≈⅔ of real wars fall inside
+     (the score model is ±${Math.round((SCORE_MODEL.BAND - 1) * 100)}%, roster ±${Math.round((ROSTER_MODEL.BAND - 1) * 100)}%).
+     It looks wide in raw dollars on a multi-billion cache, but that's honest: the model explains
+     ${(SCORE_MODEL.R2 * 100).toFixed(0)}% of the variation, not 100%. Two things make any single war
+     uncertain — the cache is <b>lumpy</b> (you get whole caches, and one extra Heavy Arms Cache is
+     ~$430m), and the underdog / loss-streak bonuses below aren't modelled. Half of all wars land
+     within ${SCORE_MODEL.ERR}% of the estimate; ~95% within a factor of 2.</p>
 
   <div class="wpp-legend-h">What's NOT in the model</div>
   <p>Two real bonuses can't be read from war reports, so they sit in the unexplained spread:</p>

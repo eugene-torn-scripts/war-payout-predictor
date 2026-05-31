@@ -9,7 +9,7 @@ The formula isn't published by Torn. It was **reverse-engineered** by fitting
 `2025-05-31`, pulled from the Torn API) with a multiplicative regression. Two
 models, picked automatically:
 
-- **Score model** — when you know your war score (mid/post-war). **R² = 0.922**,
+- **Score model** — when you know your war score (mid/post-war). **R² = 0.924**,
   median error **14%**. Most accurate.
 - **Roster model** — pre-war planning, score unknown; driven by participation
   instead. **R² = 0.893**, median error 15%.
@@ -33,11 +33,11 @@ full-screen on mobile / PDA).
 Reward is **multiplicative** — each factor scales the total:
 
 ```
-score known:   value = Base × Rank × Win × members^0.23 × score^0.51
+score known:   value = Base × Rank × Win × members^0.20 × score^0.44 × n10^0.11
 score unknown: value = Base × Rank × Win × members^0.68 × (p+0.05)^0.49
 ```
 
-where `p` = fraction of enlisted members who landed **≥10 scoring war hits**.
+where `n10` = members who landed **≥10 scoring war hits** and `p` = `n10` ÷ enlisted.
 
 ### What drives the payout
 
@@ -47,7 +47,8 @@ where `p` = fraction of enlisted members who landed **≥10 scoring war hits**.
 | **War score** | The strongest effort signal. It **absorbs participation** — once you know the score, the fraction-of-members metric adds nothing. |
 | **Win / Loss** | Winning ≈ **×2.24** (roster model). In the score model it's smaller (≈×1.75) — the *pure* win bonus, since score already reflects most of the win/loss gap. |
 | **Faction size** | Power law (`members^0.68` roster / `^0.23` score) — **not** the often-quoted "+1% per member". |
-| **Participation** | Matters by **producing score**: more participation → more score → bigger cache. The roster-model term `(p+0.05)^0.49` is strictly increasing — there is no point where more participation lowers the payout. |
+| **Participation** | Matters by **producing score**: more participation → more score → bigger cache. The roster-model term `(p+0.05)^0.49` is strictly increasing — more participation never lowers the payout. |
+| **Hit spread** | At equal score, spreading hits across more members pays a little more (`n10^0.11`): 100 members × 25 hits beats 10 × 250 by ≈+28%. Small next to total effort, but real. |
 
 ### What's *not* modelled
 
@@ -67,7 +68,8 @@ The `collector/` directory holds the full pipeline (Python, stdlib only):
 | `analyze.py` | Exploratory: median cache value by rank, win/loss, size, participation. |
 | `fit.py` | Multiplicative OLS; compares size specifications; prints the per-rank table. |
 | `fit_final.py` | Earlier single-model fit + backtest (superseded by `fit_v2.py`). |
-| `fit_v2.py` | Final fit — both score & roster models + backtests; writes `data/model.json`. |
+| `fit_v2.py` | Two-model fit (score & roster); superseded by `fit_v3.py`. |
+| `fit_v3.py` | Final fit — adds the hit-spread term + confidence bands; writes `data/model.json`. |
 
 The raw dataset (`data/reports.jsonl`, ~6 MB) is git-ignored but fully
 regenerable: point `crawl.py` at a Torn API key (Public scope is enough — it
