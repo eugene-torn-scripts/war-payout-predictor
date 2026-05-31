@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         War Payout Predictor
 // @namespace    https://github.com/eugene-torn-scripts/war-payout-predictor
-// @version      1.0.0
+// @version      1.0.1
 // @description  Predict the cash value of a Torn ranked-war cache from rank, win/loss, faction size and participation — formula reverse-engineered from ~9,700 recent wars. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
 // @grant        none
 // @license      GPL-3.0-or-later
+// @downloadURL  https://update.greasyfork.org/scripts/580583/War%20Payout%20Predictor.user.js
+// @updateURL    https://update.greasyfork.org/scripts/580583/War%20Payout%20Predictor.meta.js
 // ==/UserScript==
 
 /*
@@ -31,7 +33,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.0.0";
+    const VERSION = "1.0.1";
 
     // ════════════════════════════════════════════════════════════
     //  MODEL — fitted by multiplicative (log-linear) OLS on 9,699
