@@ -6,9 +6,16 @@ how each variable moves the payout.
 
 The formula isn't published by Torn. It was **reverse-engineered** by fitting
 **9,699 real, recent ranked-war reports** (every war ending on/after
-`2025-05-31`, pulled from the Torn API) with a multiplicative regression. It
-explains **R² = 0.894** of the variation, and the median prediction lands within
-**13%** of the actual payout.
+`2025-05-31`, pulled from the Torn API) with a multiplicative regression. Two
+models, picked automatically:
+
+- **Score model** — when you know your war score (mid/post-war). **R² = 0.922**,
+  median error **14%**. Most accurate.
+- **Roster model** — pre-war planning, score unknown; driven by participation
+  instead. **R² = 0.893**, median error 15%.
+
+Both are **strictly monotonic** — more rank, members, score, participation or a
+win never lowers the prediction.
 
 ## Install
 
@@ -26,11 +33,8 @@ full-screen on mobile / PDA).
 Reward is **multiplicative** — each factor scales the total:
 
 ```
-value($) = BaseUnit
-           × Rank          (relative to Gold I = 1.000; ~1.7× per tier)
-           × 2.29 ^ won    (win = ×2.29, loss = ×1)
-           × members^0.65  (faction size — a power law, NOT "+1%/member")
-           × exp(3.37·p − 2.55·p²)   (participation modifier, peaks ~p=66%)
+score known:   value = Base × Rank × Win × members^0.23 × score^0.51
+score unknown: value = Base × Rank × Win × members^0.68 × (p+0.05)^0.49
 ```
 
 where `p` = fraction of enlisted members who landed **≥10 scoring war hits**.
@@ -39,15 +43,16 @@ where `p` = fraction of enlisted members who landed **≥10 scoring war hits**.
 
 | Factor | Effect |
 |---|---|
-| **Rank** | Biggest lever — each tier ≈ 1.7× the one below (Unranked → Diamond III spans ×0.42 → ×3.13 of Gold I). |
-| **Win / Loss** | Winning multiplies the cache by ~**2.29×**. |
-| **Faction size** | Power law `members^0.65` — doubling your roster ≈ ×1.56. (The common "+1% per member" claim is **wrong**.) |
-| **Participation** | Fraction with ≥10 hits; modifier climbs to **~×3** and plateaus near 66%. |
+| **Rank** | Biggest lever — each tier ≈ 1.7× the one below (Unranked → Diamond III spans ×0.42 → ×3.0 of Gold I). |
+| **War score** | The strongest effort signal. It **absorbs participation** — once you know the score, the fraction-of-members metric adds nothing. |
+| **Win / Loss** | Winning ≈ **×2.24** (roster model). In the score model it's smaller (≈×1.75) — the *pure* win bonus, since score already reflects most of the win/loss gap. |
+| **Faction size** | Power law (`members^0.68` roster / `^0.23` score) — **not** the often-quoted "+1% per member". |
+| **Participation** | Matters by **producing score**: more participation → more score → bigger cache. The roster-model term `(p+0.05)^0.49` is strictly increasing — there is no point where more participation lowers the payout. |
 
 ### What's *not* modelled
 
-Two real bonuses can't be read from war reports, so they sit in the ~11%
-unexplained residual: the **underdog bonus** (out-statted by the enemy) and the
+Two real bonuses can't be read from war reports, so they sit in the unexplained
+residual: the **underdog bonus** (out-statted by the enemy) and the
 **loss-streak bonus** (winning after consecutive losses). Most wars land within
 ±35% of the prediction; unusual ones can be up to ~2× off.
 
@@ -61,7 +66,8 @@ The `collector/` directory holds the full pipeline (Python, stdlib only):
 | `coverage.py` | Summarise rank / size / participation coverage of the dataset. |
 | `analyze.py` | Exploratory: median cache value by rank, win/loss, size, participation. |
 | `fit.py` | Multiplicative OLS; compares size specifications; prints the per-rank table. |
-| `fit_final.py` | Final fit + backtest; writes `data/model.json`. |
+| `fit_final.py` | Earlier single-model fit + backtest (superseded by `fit_v2.py`). |
+| `fit_v2.py` | Final fit — both score & roster models + backtests; writes `data/model.json`. |
 
 The raw dataset (`data/reports.jsonl`, ~6 MB) is git-ignored but fully
 regenerable: point `crawl.py` at a Torn API key (Public scope is enough — it
