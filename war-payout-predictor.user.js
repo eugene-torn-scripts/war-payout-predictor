@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         War Payout Predictor
 // @namespace    https://github.com/eugene-torn-scripts/war-payout-predictor
-// @version      1.2.0
+// @version      1.2.1
 // @description  Predict the cash value of a Torn ranked-war cache from rank, win/loss, faction size, war score and participation (incl. hit-spread bonus) — formula reverse-engineered from ~9,700 recent wars. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -33,7 +33,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.2.0";
+    const VERSION = "1.2.1";
 
     // ════════════════════════════════════════════════════════════
     //  MODEL — two multiplicative (log-linear) fits on 9,699 recent
@@ -511,7 +511,7 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
       <input class="wpp-input" id="wpp-score" type="number" min="0" step="1" placeholder="leave blank if unknown" value="${s.score}">
     </div>
     <div class="wpp-field">
-      <label>Members with ≥10 war hits <span class="wpp-sub">(used only if score is blank)</span></label>
+      <label>Members with ≥10 war hits <span class="wpp-sub">spread bonus with score · main effort signal without it</span></label>
       <input class="wpp-input" id="wpp-hit" type="number" min="0" max="100" step="1" value="${s.hitters}">
       <span class="wpp-sub" id="wpp-pct"></span>
     </div>
