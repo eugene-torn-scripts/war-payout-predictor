@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         War Payout Predictor
 // @namespace    https://github.com/eugene-torn-scripts/war-payout-predictor
-// @version      2.0.0
+// @version      2.0.1
 // @description  Predict a Torn ranked-war cache payout using the wiki formula (rank base × win × +1%/member × ×0–3 participation from score-share), with constants fitted to ~9,700 recent wars. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -33,7 +33,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.0.0";
+    const VERSION = "2.0.1";
 
     // ════════════════════════════════════════════════════════════
     //  MODEL — fitted on 9,699 recent ranked-war faction-rows (forfeits &
@@ -125,7 +125,10 @@
             const base = m.BASE[rank] != null ? m.BASE[rank] : m.BASE["Gold I"];
             const share = score / (score + oppScore);
             const ls = Math.log(Math.max(share, 1e-4));
-            const partRaw = Math.exp(m.A * ls + m.B * ls * ls);
+            // partMod peaks at share≈0.70; past that, dominance plateaus at the max
+            // (×3) rather than dipping — monotonic and more intuitive.
+            const lsPeak = -m.A / (2 * m.B);
+            const partRaw = ls >= lsPeak ? m.PART_MAX : Math.exp(m.A * ls + m.B * ls * ls);
             const partMod = 3 * partRaw / m.PART_MAX;          // ×0…×3
             const value = Math.max(FLOOR, base * winF * sizeF * partMod);
             return {
@@ -552,6 +555,11 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
                 s.hitters = clamp(parseInt(hitEl.value, 10) || 0, 0, s.enlisted);
                 s.score = parseScore(scoreEl);
                 s.oppScore = parseScore(oppEl);
+                // The ≥10-hit field only drives the pre-war (roster) model; once both
+                // scores are set, participation comes from score-share — grey it out.
+                const scoresSet = s.score !== "" && s.oppScore !== "";
+                hitEl.disabled = scoresSet;
+                hitEl.style.opacity = scoresSet ? "0.45" : "1";
                 this.renderResult(c.querySelector("#wpp-result"));
             };
             rankEl.addEventListener("change", recompute);
