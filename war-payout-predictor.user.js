@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         War Payout Predictor
 // @namespace    https://github.com/eugene-torn-scripts/war-payout-predictor
-// @version      1.3.0
-// @description  Predict the cash value of a Torn ranked-war cache from rank, win/loss, faction size, war score and participation (incl. hit-spread bonus) — formula reverse-engineered from ~9,700 recent wars. Desktop + Torn PDA.
+// @version      2.0.0
+// @description  Predict a Torn ranked-war cache payout using the wiki formula (rank base × win × +1%/member × ×0–3 participation from score-share), with constants fitted to ~9,700 recent wars. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
 // @grant        none
@@ -33,62 +33,68 @@
 (function () {
     "use strict";
 
-    const VERSION = "1.3.0";
+    const VERSION = "2.0.0";
 
     // ════════════════════════════════════════════════════════════
-    //  MODEL — two multiplicative (log-linear) fits on 9,699 recent
-    //  ranked-war faction-rows (forfeits & zero-reward rows excluded),
-    //  all ending on/after 2025-05-31. Both are strictly monotonic:
-    //  more of any input never lowers the predicted payout.
+    //  MODEL — fitted on 9,699 recent ranked-war faction-rows (forfeits &
+    //  zero-reward rows excluded), all ending on/after 2025-05-31, with the
+    //  Torn-wiki structure imposed:
     //
-    //  SCORE model (use when the war score is known — mid/post-war):
-    //    value = exp(I) · RANK · exp(WON·won) · score^SCORE · n10^N10
-    //    R²=0.915, median error 16%, within 2x for 98% of wars.
-    //    n10 = members who landed ≥10 war hits, i.e. who actually FOUGHT — this
-    //    replaces enlisted roster, since the cache reflects participation, not
-    //    bench-warmers. (A faction that enlists 90 but fields 3 gets a floor cache.)
+    //    cache = BASE(rank) × 2^win × (1 + 0.01·(members−10)) × participation
     //
-    //  ROSTER model (pre-war planning, score unknown):
-    //    value = exp(I) · RANK · exp(WON·won) · members^ENL · (p+ε)^PART
-    //    R²=0.893, median error 15%.  p = fraction of enlisted with ≥10 hits.
+    //  • Win = ×2, loss = ×1            (wiki, fixed)
+    //  • Size = +1% per member beyond 10 (wiki, fixed)
+    //  • Participation modifier ×0…×3   (wiki) — anchored so a fully-dominant
+    //    faction ≈ ×3 and a dominated one collapses toward ×0 (→ floor cache).
+    //  • BASE(rank) is fitted (the dominant lever).
     //
-    //  Score is the strongest "effort" signal. BAND = multiplicative factor
-    //  covering ~68% of wars (the prediction's 1σ-ish uncertainty). FLOOR is the
-    //  practical minimum payout (1 Small Arms Cache). Caches are valued at
-    //  CACHE_PRICES; absolute $ tracks the live market, multipliers don't.
+    //  Participation is driven by SCORE-SHARE vs the opponent (the wiki's own
+    //  description), which is what makes a blown-out faction hit the floor:
+    //    SCORE model  (both scores known): share = own/(own+opp);
+    //       partRaw = exp(A·ln s + B·ln²s); displayed ×0-3 = 3·partRaw/PART_MAX.
+    //       R²=0.909, median error 17%.
+    //  Pre-war (scores unknown) the ROSTER model estimates participation from the
+    //  member-participation fraction p (≥10 hits): ×0-3 = 3·p^K. R²=0.831.
+    //
+    //  BAND = factor covering ~68% of wars. FLOOR = 1 Small Arms Cache. Caches
+    //  valued at CACHE_PRICES; absolute $ tracks the live market, multipliers don't.
     // ════════════════════════════════════════════════════════════
 
     const FIT = { ROWS: 9699, CUTOFF: "2025-05-31" };
-    const PART_EPS = 0.05;
-    const FLOOR = 115350226;   // 1 Small Arms Cache — never predict below this
+    const WIN_FACTOR = 2.0;          // wiki: win ×2, loss ×1
+    const SIZE_PER_MEMBER = 0.01;    // wiki: +1% per member beyond 10
+    const FLOOR = 115350226;         // 1 Small Arms Cache — never predict below this
 
+    // SCORE model — participation from score-share. BASE values are anchored so
+    // value = BASE × 2^win × sizeFactor × partD, with partD = 3·partRaw/PART_MAX.
     const SCORE_MODEL = {
-        INT: 15.964200, WON: 0.461900, SCORE: 0.478400, N10: 0.202700,
-        R2: 0.915, ERR: 16, BAND: 1.268,
-        RANK: {
-            "Unranked": 0.460, "Bronze": 0.492, "Bronze I": 0.535, "Bronze II": 0.616,
-            "Bronze III": 0.643, "Silver": 0.627, "Silver I": 0.710, "Silver II": 0.804,
-            "Silver III": 0.874, "Gold": 0.885, "Gold I": 1.000, "Gold II": 1.111,
-            "Gold III": 1.217, "Platinum": 1.234, "Platinum I": 1.377, "Platinum II": 1.563,
-            "Platinum III": 1.770, "Diamond": 2.137, "Diamond I": 2.273, "Diamond II": 2.652,
-            "Diamond III": 3.204,
+        A: -0.240, B: -0.341, PART_MAX: 1.043,
+        R2: 0.909, ERR: 17, BAND: 1.297,
+        BASE: {
+            "Unranked": 67152873, "Bronze": 81182543, "Bronze I": 87645728, "Bronze II": 99852131,
+            "Bronze III": 109193544, "Silver": 122477374, "Silver I": 137802190, "Silver II": 158234098,
+            "Silver III": 178040186, "Gold": 203123848, "Gold I": 223346555, "Gold II": 253048398,
+            "Gold III": 283595165, "Platinum": 303008024, "Platinum I": 331904881, "Platinum II": 369430334,
+            "Platinum III": 400922433, "Diamond": 606109042, "Diamond I": 675620682, "Diamond II": 764616037,
+            "Diamond III": 821594251,
         },
     };
 
+    // ROSTER model — pre-war estimate; participation from member fraction p (≥10 hits).
     const ROSTER_MODEL = {
-        INT: 18.280073, WON: 0.804268, ENL: 0.678625, PART: 0.487226,
-        R2: 0.893, ERR: 15, BAND: 1.254,
-        RANK: {
-            "Unranked": 0.424, "Bronze": 0.431, "Bronze I": 0.471, "Bronze II": 0.543,
-            "Bronze III": 0.573, "Silver": 0.605, "Silver I": 0.674, "Silver II": 0.765,
-            "Silver III": 0.846, "Gold": 0.896, "Gold I": 1.000, "Gold II": 1.112,
-            "Gold III": 1.232, "Platinum": 1.279, "Platinum I": 1.440, "Platinum II": 1.615,
-            "Platinum III": 1.808, "Diamond": 2.145, "Diamond I": 2.296, "Diamond II": 2.574,
-            "Diamond III": 3.037,
+        K: 0.356,
+        R2: 0.831, ERR: 22, BAND: 1.393,
+        BASE: {
+            "Unranked": 78143994, "Bronze": 94439977, "Bronze I": 100772301, "Bronze II": 116959835,
+            "Bronze III": 125172492, "Silver": 136837313, "Silver I": 151521875, "Silver II": 178215360,
+            "Silver III": 198603735, "Gold": 220846236, "Gold I": 243357395, "Gold II": 279302934,
+            "Gold III": 313678511, "Platinum": 326627190, "Platinum I": 356872554, "Platinum II": 404848475,
+            "Platinum III": 453618748, "Diamond": 740272985, "Diamond I": 788307333, "Diamond II": 871427529,
+            "Diamond III": 1065997054,
         },
     };
 
-    const RANK_ORDER = Object.keys(ROSTER_MODEL.RANK);
+    const RANK_ORDER = Object.keys(SCORE_MODEL.BASE);
 
     // Cache market prices used when fitting (current Torn item-market averages).
     const CACHE_PRICES = [
@@ -103,38 +109,38 @@
     //  PREDICTION
     // ════════════════════════════════════════════════════════════
 
-    // `n10` = members who landed ≥10 war hits (= who actually fought). If
-    // `score` > 0, uses the high-accuracy score model (driven by score + fighters,
-    // not enlisted roster); otherwise the roster model uses members + participation
-    // rate p = n10/members. Predictions floor at 1 Small Arms Cache.
-    // Returns { value, model, factors, band, lowPart }.
-    function predict({ rank, won, enlisted, score, n10 }) {
+    // Wiki structure: cache = BASE(rank) × 2^win × (1+1%·(members−10)) × partMod(×0-3).
+    // If both `score` and `oppScore` are known → SCORE model, participation from
+    // score-share = own/(own+opp). Otherwise → ROSTER model, participation from the
+    // member fraction p = n10/members (n10 = members with ≥10 hits). Floors at 1 cache.
+    // Returns { value, model, factors, band, partMod, lowPart }.
+    function predict({ rank, won, enlisted, score, oppScore, n10 }) {
         const enl = Math.max(1, enlisted);
-        const lowPart = (n10 / enl) < 0.10;        // very low participation → near floor
-        if (score && score > 0) {
+        const winF = won ? WIN_FACTOR : 1;
+        const sizeF = 1 + SIZE_PER_MEMBER * (enl - 10);
+        const useShare = score > 0 && oppScore > 0;
+
+        if (useShare) {
             const m = SCORE_MODEL;
-            const base = Math.exp(m.INT);
-            const rankF = m.RANK[rank] != null ? m.RANK[rank] : 1;
-            const winF = won ? Math.exp(m.WON) : 1;
-            const scoreF = Math.pow(score, m.SCORE);
-            const fightF = Math.pow(Math.max(n10, 1), m.N10);
-            const value = Math.max(FLOOR, base * rankF * winF * scoreF * fightF);
+            const base = m.BASE[rank] != null ? m.BASE[rank] : m.BASE["Gold I"];
+            const share = score / (score + oppScore);
+            const ls = Math.log(Math.max(share, 1e-4));
+            const partRaw = Math.exp(m.A * ls + m.B * ls * ls);
+            const partMod = 3 * partRaw / m.PART_MAX;          // ×0…×3
+            const value = Math.max(FLOOR, base * winF * sizeF * partMod);
             return {
-                value, model: "score", band: m.BAND, lowPart,
-                factors: { base, rank: rankF, win: winF, score: scoreF, fighters: fightF },
+                value, model: "score", band: m.BAND, partMod, share, lowPart: partMod < 0.6,
+                factors: { base, win: winF, size: sizeF, part: partMod },
             };
         }
         const m = ROSTER_MODEL;
-        const base = Math.exp(m.INT);
-        const rankF = m.RANK[rank] != null ? m.RANK[rank] : 1;
-        const winF = won ? Math.exp(m.WON) : 1;
-        const sizeF = Math.pow(enl, m.ENL);
+        const base = m.BASE[rank] != null ? m.BASE[rank] : m.BASE["Gold I"];
         const p = Math.min(1, n10 / enl);
-        const partF = Math.pow(p + PART_EPS, m.PART);
-        const value = Math.max(FLOOR, base * rankF * winF * sizeF * partF);
+        const partMod = 3 * Math.pow(p, m.K);                  // ×0…×3
+        const value = Math.max(FLOOR, base * winF * sizeF * partMod);
         return {
-            value, model: "roster", band: m.BAND, lowPart,
-            factors: { base, rank: rankF, win: winF, size: sizeF, part: partF },
+            value, model: "roster", band: m.BAND, partMod, share: null, lowPart: partMod < 0.6,
+            factors: { base, win: winF, size: sizeF, part: partMod },
         };
     }
 
@@ -438,7 +444,7 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
 
     const UI = {
         built: false,
-        state: { rank: "Gold I", won: true, enlisted: 50, hitters: 25, score: "" },
+        state: { rank: "Gold I", won: true, enlisted: 50, hitters: 25, score: "", oppScore: "" },
 
         build() {
             if (this.built) return;
@@ -512,11 +518,15 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
       <input class="wpp-input" id="wpp-enl" type="number" min="10" max="100" step="1" value="${s.enlisted}">
     </div>
     <div class="wpp-field">
-      <label>War score <span class="wpp-sub">your faction's — most accurate</span></label>
-      <input class="wpp-input" id="wpp-score" type="number" min="0" step="1" placeholder="leave blank if unknown" value="${s.score}">
+      <label>Your war score <span class="wpp-sub">for an in/post-war prediction</span></label>
+      <input class="wpp-input" id="wpp-score" type="number" min="0" step="1" placeholder="leave blank for pre-war estimate" value="${s.score}">
     </div>
     <div class="wpp-field">
-      <label>Members with ≥10 war hits <span class="wpp-sub">spread bonus with score · main effort signal without it</span></label>
+      <label>Opponent war score <span class="wpp-sub">needed for the accurate model</span></label>
+      <input class="wpp-input" id="wpp-oppscore" type="number" min="0" step="1" placeholder="leave blank for pre-war estimate" value="${s.oppScore}">
+    </div>
+    <div class="wpp-field">
+      <label>Members with ≥10 war hits <span class="wpp-sub">used for the pre-war estimate (no scores)</span></label>
       <input class="wpp-input" id="wpp-hit" type="number" min="0" max="100" step="1" value="${s.hitters}">
       <span class="wpp-sub" id="wpp-pct"></span>
     </div>
@@ -528,21 +538,27 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
             const enlEl = c.querySelector("#wpp-enl");
             const hitEl = c.querySelector("#wpp-hit");
             const scoreEl = c.querySelector("#wpp-score");
+            const oppEl = c.querySelector("#wpp-oppscore");
             const winEl = c.querySelector("#wpp-win");
             const lossEl = c.querySelector("#wpp-loss");
 
+            const parseScore = (el) => {
+                const n = parseInt(el.value, 10);
+                return el.value === "" || !isFinite(n) || n < 0 ? "" : n;
+            };
             const recompute = () => {
                 s.rank = rankEl.value;
                 s.enlisted = clamp(parseInt(enlEl.value, 10) || 0, 1, 100);
                 s.hitters = clamp(parseInt(hitEl.value, 10) || 0, 0, s.enlisted);
-                const sc = parseInt(scoreEl.value, 10);
-                s.score = scoreEl.value === "" || !isFinite(sc) || sc < 0 ? "" : sc;
+                s.score = parseScore(scoreEl);
+                s.oppScore = parseScore(oppEl);
                 this.renderResult(c.querySelector("#wpp-result"));
             };
             rankEl.addEventListener("change", recompute);
             enlEl.addEventListener("input", recompute);
             hitEl.addEventListener("input", recompute);
             scoreEl.addEventListener("input", recompute);
+            oppEl.addEventListener("input", recompute);
             winEl.addEventListener("click", () => {
                 s.won = true; winEl.classList.add("active"); lossEl.classList.remove("active"); recompute();
             });
@@ -558,26 +574,27 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
             const n10 = Math.min(s.hitters, enl);
             const p = enl > 0 ? Math.min(1, n10 / enl) : 0;
             const score = s.score === "" ? 0 : s.score;
-            const { value, model, factors, band, lowPart } = predict({ rank: s.rank, won: s.won, enlisted: enl, score, n10 });
+            const oppScore = s.oppScore === "" ? 0 : s.oppScore;
+            const { value, model, factors, band, partMod, share, lowPart } =
+                predict({ rank: s.rank, won: s.won, enlisted: enl, score, oppScore, n10 });
 
             const lo = value / band, hi = value * band;
-            const pctEl = document.getElementById("wpp-pct");
-            if (pctEl) pctEl.textContent = `participation = ${(p * 100).toFixed(0)}% of enlisted`;
-
             const usingScore = model === "score";
+            const partPct = usingScore ? (share * 100) : (p * 100);
+            const pctEl = document.getElementById("wpp-pct");
+            if (pctEl) pctEl.textContent = `participation = ${(p * 100).toFixed(0)}% of enlisted made ≥10 hits`;
+
             const pill = usingScore
                 ? `<span class="wpp-modepill score">score model · ±${SCORE_MODEL.ERR}%</span>`
                 : `<span class="wpp-modepill roster">roster model · ±${ROSTER_MODEL.ERR}%</span>`;
 
-            const midRows = usingScore
-                ? `<tr><td>× Score (${Number(score).toLocaleString()})</td><td>×${factors.score.toFixed(1)}</td></tr>
-                   <tr><td>× Fighters (${n10} made ≥10 hits)</td><td>×${factors.fighters.toFixed(2)}</td></tr>`
-                : `<tr><td>× Size (${enl} members)</td><td>×${factors.size.toFixed(2)}</td></tr>
-                   <tr><td>× Participation (${(p * 100).toFixed(0)}%)</td><td>×${factors.part.toFixed(2)}</td></tr>`;
+            const partLabel = usingScore
+                ? `${partPct.toFixed(0)}% score-share`
+                : `${partPct.toFixed(0)}% of members`;
 
             const lowHint = lowPart
-                ? `<div class="wpp-lowhint">⚠ Very low participation (${(p * 100).toFixed(0)}% made ≥10 hits).
-                   Blown-out factions usually land near the <b>minimum</b> (~${fmtMoney(FLOOR)}); treat this as an upper estimate.</div>`
+                ? `<div class="wpp-lowhint">⚠ Participation modifier is only <b>×${partMod.toFixed(2)}</b>
+                   (of a max ×3) — a dominated faction. These land near the <b>minimum</b> cache (~${fmtMoney(FLOOR)}).</div>`
                 : "";
 
             box.innerHTML = `
@@ -585,110 +602,85 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
 <div class="wpp-range">best estimate · ~⅔ of real wars fall in ${fmtMoney(lo)} – ${fmtMoney(hi)}</div>
 ${lowHint}
 <table class="wpp-breakdown">
-  <tr><td>Base unit</td><td>${fmtMoney(factors.base)}</td></tr>
-  <tr><td>× Rank (${s.rank})</td><td>×${factors.rank.toFixed(3)}</td></tr>
-  <tr><td>× Result (${s.won ? "Win" : "Loss"})</td><td>×${factors.win.toFixed(2)}</td></tr>
-  ${midRows}
+  <tr><td>Base (rank ${s.rank})</td><td>${fmtMoney(factors.base)}</td></tr>
+  <tr><td>× Win/Loss (${s.won ? "Win" : "Loss"})</td><td>×${factors.win.toFixed(0)}</td></tr>
+  <tr><td>× Size (${enl} members, +1%/mbr)</td><td>×${factors.size.toFixed(2)}</td></tr>
+  <tr><td>× Participation (${partLabel})</td><td>×${factors.part.toFixed(2)} <span style="color:#8a8268">/3</span></td></tr>
   <tr class="total"><td>= Predicted faction cache</td><td>${fmtMoney(value)}</td></tr>
 </table>
 <div class="wpp-note">${usingScore
-    ? `Using the <b>score model</b> (median error ${SCORE_MODEL.ERR}%). It keys off your war score and how many
-       members actually <b>fought</b> (≥10 hits) — enlisted roster doesn't matter once those are known. `
-    : `No score entered → <b>roster model</b> pre-war estimate. Enter your war score for a sharper number. `}
-  The range is the model's typical spread; unmodelled <b>underdog</b> / <b>loss-streak</b> bonuses and the
-  lumpy whole-cache payout move individual wars further. Faction gross at market prices — not your personal cut.</div>`;
+    ? `<b>Score model</b> (median error ${SCORE_MODEL.ERR}%): participation ×0–3 comes from your <b>score-share vs the opponent</b> — the wiki mechanic. `
+    : `<b>Pre-war estimate</b> (roster model): enter both war scores for the accurate score-share model. Participation here is estimated from the ≥10-hit member fraction. `}
+  Win ×2 / loss ×1 and +1%/member are the wiki's fixed factors; the base and participation curve are fitted.
+  Unmodelled <b>underdog</b> / <b>loss-streak</b> bonuses and the lumpy whole-cache payout move individual wars
+  further. Faction gross at market prices — not your personal cut.</div>`;
         },
 
         // ---- Legend tab -----------------------------------------------------
         renderLegend(c) {
+            const scorePart = (sh) => 3 * Math.exp(SCORE_MODEL.A * Math.log(sh) + SCORE_MODEL.B * Math.log(sh) ** 2) / SCORE_MODEL.PART_MAX;
+            const rosterPart = (p) => 3 * Math.pow(p, ROSTER_MODEL.K);
             const rankRows = RANK_ORDER.map((r) =>
                 `<tr class="${r === this.state.rank ? "hl" : ""}"><td>${r}</td>` +
-                `<td class="num">×${ROSTER_MODEL.RANK[r].toFixed(3)}</td>` +
-                `<td class="num">×${SCORE_MODEL.RANK[r].toFixed(3)}</td></tr>`).join("");
+                `<td class="num">${fmtMoney(SCORE_MODEL.BASE[r])}</td></tr>`).join("");
             const priceRows = CACHE_PRICES.map((x) =>
                 `<tr><td>${x.name}</td><td class="num">${fmtMoney(x.avg)}</td></tr>`).join("");
 
             c.innerHTML = `
 <div class="wpp-legend">
-  <p>This tool predicts the <b>gross cash value of the war cache</b> a faction receives when a ranked
-     war ends. The formula was reverse-engineered by fitting <b>${FIT.ROWS.toLocaleString()}</b> real,
-     recent ranked-war reports (all ending on/after ${FIT.CUTOFF}) pulled from the Torn API.</p>
+  <p>This tool predicts the <b>gross cash value of the war cache</b> a faction receives when a ranked war
+     ends. It uses the <b>official Torn-wiki formula structure</b>, with the constants fitted to
+     <b>${FIT.ROWS.toLocaleString()}</b> real, recent war reports (ending on/after ${FIT.CUTOFF}).</p>
 
-  <div class="wpp-legend-h">Two models</div>
-  <p>Reward is <b>multiplicative</b> — each factor scales the total. There are two versions, and the
-     calculator picks automatically:</p>
+  <div class="wpp-legend-h">The formula <span class="wpp-pill">wiki</span></div>
+  <p>Reward is <b>multiplicative</b>:</p>
+  <p><code>cache = Base(rank) × 2^win × (1 + 1%·(members−10)) × Participation(×0–3)</code></p>
   <ul>
-    <li><span class="wpp-pill">score</span> If you enter your <b>war score</b> — the most accurate
-       (R²&nbsp;${SCORE_MODEL.R2}, median error ${SCORE_MODEL.ERR}%). Use during or after a war.
-       <br><code>value = Base × Rank × Win × score^${SCORE_MODEL.SCORE} × fighters^${SCORE_MODEL.N10}</code></li>
-    <li><span class="wpp-pill">roster</span> If score is blank — a pre-war estimate
-       (R²&nbsp;${ROSTER_MODEL.R2}, median error ${ROSTER_MODEL.ERR}%) driven by participation instead.
-       <br><code>value = Base × Rank × Win × members^${ROSTER_MODEL.ENL} × (p+${PART_EPS})^${ROSTER_MODEL.PART}</code></li>
+    <li><b>Win ×2 / loss ×1</b> — fixed (wiki).</li>
+    <li><b>Size +1% per member</b> beyond the 10-member minimum — fixed (wiki).</li>
+    <li><b>Participation modifier ×0–×3</b> — fitted curve (below).</li>
+    <li><b>Base(rank)</b> — fitted; the dominant lever (table below).</li>
   </ul>
-  <p>where <code>fighters</code> = members who landed ≥10 war hits, and <code>p</code> = fighters ÷ enlisted.</p>
 
-  <div class="wpp-legend-h">Score + who fought — not the roster</div>
-  <p>War <b>score</b> (your faction's total) is the single best predictor of effort. Alongside it, the
-     score model uses the number of members who actually <b>fought</b> (≥10 hits) — <i>not</i> your
-     enlisted roster. A faction that enlists 90 but fields 3 doesn't get credit for 90; it gets a
-     near-minimum cache. At equal score, more fighters still pays more (<code>fighters^${SCORE_MODEL.N10}</code>):
-     10 → 100 fighters ≈ <b>×${Math.pow(10, SCORE_MODEL.N10).toFixed(2)}</b>. More participation is always
-     better — it raises both your score and your fighter count.</p>
+  <div class="wpp-legend-h">Participation ×0–×3 — from score-share</div>
+  <p>The wiki says the ×0–×3 modifier comes from your <b>score relative to the opponent's</b>. That's why a
+     blown-out faction collapses toward ×0 (and the minimum cache), while a dominant one approaches ×3.
+     With both war scores entered (the <span class="wpp-pill">score</span> model, R²&nbsp;${SCORE_MODEL.R2}),
+     share = your score ÷ (both scores):</p>
+  <ul>
+    <li>5% share (dominated) → <b>×${scorePart(0.05).toFixed(2)}</b></li>
+    <li>25% share → ×${scorePart(0.25).toFixed(2)}</li>
+    <li>50% share (even) → ×${scorePart(0.50).toFixed(2)}</li>
+    <li>75%+ (dominant) → ×${scorePart(0.75).toFixed(2)} (≈ max)</li>
+  </ul>
+  <p>Pre-war, with no scores, the <span class="wpp-pill">roster</span> model (R²&nbsp;${ROSTER_MODEL.R2}) estimates
+     it from the fraction of members who land ≥10 hits, as <code>3·p^${ROSTER_MODEL.K.toFixed(2)}</code>:
+     10%→×${rosterPart(0.10).toFixed(2)}, 50%→×${rosterPart(0.50).toFixed(2)}, 100%→×${rosterPart(1).toFixed(2)}.</p>
 
-  <div class="wpp-legend-h">Rank <span class="wpp-pill">biggest lever</span></div>
-  <p>Each tier is worth roughly <b>1.7× the one below</b>. Within a tier, divisions climb
-     base → I → II → III, then you promote. Multiplier relative to Gold&nbsp;I (= 1.000):</p>
+  <div class="wpp-legend-h">Base by rank <span class="wpp-pill">biggest lever</span></div>
+  <p>The base reward roughly doubles every couple of ranks. Within a tier, divisions climb base → I → II → III,
+     then you promote. (Combine with ×2 win, the size factor, and ×0–3 participation.)</p>
   <div class="wpp-tablewrap"><table class="wpp-table">
-    <tr><th>Rank</th><th class="num">Roster model</th><th class="num">Score model</th></tr>${rankRows}
+    <tr><th>Rank</th><th class="num">Base reward</th></tr>${rankRows}
   </table></div>
 
-  <div class="wpp-legend-h">Win vs Loss</div>
-  <p>Winning multiplies the cache by <b>×${Math.exp(ROSTER_MODEL.WON).toFixed(2)}</b> in the roster model.
-     In the score model the win bonus is smaller (<b>×${Math.exp(SCORE_MODEL.WON).toFixed(2)}</b>) because
-     score already reflects most of the win/loss gap (winners score more) — this is the <i>pure</i> win
-     bonus, holding score equal.</p>
-
-  <div class="wpp-legend-h">Faction size (roster model)</div>
-  <p>In the <b>roster</b> model (no score), reward grows with enlisted members as a <b>power law</b> —
-     <b>not</b> the often-quoted "+1% per member": <code>members^${ROSTER_MODEL.ENL}</code>, so doubling
-     your roster ≈ ×${Math.pow(2, ROSTER_MODEL.ENL).toFixed(2)}. The <b>score</b> model ignores enlisted
-     entirely — once you know the score and how many fought, the bench doesn't matter.</p>
-
-  <div class="wpp-legend-h">Participation (roster model only)</div>
-  <p>Measured as the <b>fraction of enlisted who land ≥10 scoring war hits</b> (<code>p</code>). The
-     modifier <code>(p+${PART_EPS})^${ROSTER_MODEL.PART}</code> rises steeply then flattens, and is
-     <b>monotonically increasing</b> — more is always better. Approximate effect:</p>
-  <ul>
-    <li>p = 10% → ×${Math.pow(0.10 + PART_EPS, ROSTER_MODEL.PART).toFixed(2)}</li>
-    <li>p = 35% → ×${Math.pow(0.35 + PART_EPS, ROSTER_MODEL.PART).toFixed(2)}</li>
-    <li>p = 60% → ×${Math.pow(0.60 + PART_EPS, ROSTER_MODEL.PART).toFixed(2)}</li>
-    <li>p = 100% → ×${Math.pow(1.00 + PART_EPS, ROSTER_MODEL.PART).toFixed(2)}</li>
-  </ul>
-
   <div class="wpp-legend-h">Accuracy & the range</div>
-  <p>The calculator shows a <b>best estimate</b> plus a range that ≈⅔ of real wars fall inside
-     (the score model is ±${Math.round((SCORE_MODEL.BAND - 1) * 100)}%, roster ±${Math.round((ROSTER_MODEL.BAND - 1) * 100)}%).
-     It looks wide in raw dollars on a multi-billion cache, but that's honest: the model explains
-     ${(SCORE_MODEL.R2 * 100).toFixed(0)}% of the variation, not 100%. Two things make any single war
-     uncertain — the cache is <b>lumpy</b> (you get whole caches, and one extra Heavy Arms Cache is
-     ~$430m), and the underdog / loss-streak bonuses below aren't modelled. Half of all wars land
-     within ${SCORE_MODEL.ERR}% of the estimate; ~98% within a factor of 2.</p>
-  <p><b>Blown-out / very-low-participation factions</b> (e.g. the loser of a lopsided war, with only a
-     handful fighting) receive close to the <b>minimum cache</b> (~${fmtMoney(FLOOR)}). The model flags
-     these and floors the estimate, but still tends to read a bit high — treat a low-participation
-     number as an upper bound.</p>
+  <p>The calculator shows a <b>best estimate</b> plus a range ≈⅔ of real wars fall inside
+     (±${Math.round((SCORE_MODEL.BAND - 1) * 100)}% for the score model). It's wide on a multi-billion cache
+     because the model explains ${(SCORE_MODEL.R2 * 100).toFixed(0)}% of the variation, not 100%: the cache is
+     <b>lumpy</b> (whole caches; one Heavy Arms Cache ≈ $430m) and the bonuses below aren't modelled.
+     Half of wars land within ${SCORE_MODEL.ERR}% of the estimate; ~95% within a factor of 2.</p>
 
   <div class="wpp-legend-h">What's NOT in the model</div>
-  <p>Two real bonuses can't be read from war reports, so they sit in the unexplained spread:</p>
+  <p>Two wiki bonuses can't be read from war reports, so they sit in the spread:</p>
   <ul>
     <li><b>Underdog bonus</b> — for being out-statted by the enemy (needs battle stats).</li>
     <li><b>Loss-streak bonus</b> — for winning after consecutive losses.</li>
   </ul>
-  <p>Cache quantization (rewards come as whole caches) and market-price drift add the rest.</p>
 
   <div class="wpp-legend-h">Cache valuation</div>
-  <p>Caches are valued at these Torn item-market averages (used when the formula was fitted). Your real
-     $ moves with the live market, but the multipliers don't:</p>
+  <p>Caches are valued at these Torn item-market averages. Your real $ moves with the live market, but the
+     multipliers don't:</p>
   <div class="wpp-tablewrap"><table class="wpp-table">
     <tr><th>Cache</th><th class="num">Avg price</th></tr>${priceRows}
   </table></div>
