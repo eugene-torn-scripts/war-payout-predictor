@@ -1,0 +1,10 @@
+# Raw scrape output & crawl bookkeeping — large and regenerable via collector/crawl.py.
+# The fitted model (data/model.json) and prices (data/cache_prices.json) ARE committed.
+data/reports.jsonl
+data/scanned_ids.txt
+data/faction_frontier.txt
+data/factions_done.txt
+data/*.log
+
+# OS noise
+.DS_Store

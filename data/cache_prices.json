@@ -1,0 +1,27 @@
+{
+  "1118": {
+    "name": "Armor Cache",
+    "avg": 355399997,
+    "low": 365000000
+  },
+  "1119": {
+    "name": "Melee Cache",
+    "avg": 172037496,
+    "low": 189420419
+  },
+  "1120": {
+    "name": "Small Arms Cache",
+    "avg": 115350226,
+    "low": 125000000
+  },
+  "1121": {
+    "name": "Medium Arms Cache",
+    "avg": 232999999,
+    "low": 245000000
+  },
+  "1122": {
+    "name": "Heavy Arms Cache",
+    "avg": 429142570,
+    "low": 489997999
+  }
+}
