@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         War Payout Predictor
 // @namespace    https://github.com/eugene-torn-scripts/war-payout-predictor
-// @version      2.1.0
+// @version      2.1.1
 // @description  Predict a Torn ranked-war cache payout using the wiki formula (rank base × win × +1%/member × ×0–3 participation + fighter counts), with constants fitted to ~9,700 recent wars. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -33,7 +33,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "2.1.0";
+    const VERSION = "2.1.1";
 
     // ════════════════════════════════════════════════════════════
     //  MODEL — fitted on 9,699 recent ranked-war faction-rows (forfeits &
@@ -386,6 +386,12 @@
 .wpp-section h3{margin:0 0 8px;font-size:14px;color:#eee}
 .wpp-section p{color:#9a9a9a;font-size:12px;margin:4px 0;line-height:1.5}
 .wpp-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.wpp-cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:4px}
+.wpp-col{min-width:0}
+.wpp-colhdr{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+  margin-bottom:10px;padding-bottom:5px;border-bottom:1px solid #3a3a2a}
+.wpp-colhdr.you{color:#6fd38b;border-bottom-color:#234a30}
+.wpp-colhdr.opp{color:#e08a8a;border-bottom-color:#4a2323}
 .wpp-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
 .wpp-field label{color:#bbb;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
 .wpp-field .wpp-sub{color:#777;font-size:11px;text-transform:none;letter-spacing:0}
@@ -432,6 +438,8 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
     top:0;left:0;transform:none;border-radius:0;border:none}
   #wpp-content{padding:12px}
   .wpp-grid-2{grid-template-columns:1fr;gap:8px}
+  .wpp-cols{grid-template-columns:1fr;gap:6px}
+  .wpp-colhdr{margin-top:6px}
   #wpp-header h2{font-size:15px}
   #wpp-header .wpp-ver{margin-left:6px}
   .wpp-tab{padding:11px 16px}
@@ -520,26 +528,34 @@ table.wpp-table{width:100%;border-collapse:collapse;font-size:13px}
         <button type="button" class="loss${!s.won ? " active" : ""}" id="wpp-loss">Loss</button>
       </div>
     </div>
-    <div class="wpp-field">
-      <label>Enlisted members <span class="wpp-sub">(10–100)</span></label>
-      <input class="wpp-input" id="wpp-enl" type="number" min="10" max="100" step="1" value="${s.enlisted}">
+  </div>
+  <div class="wpp-cols">
+    <div class="wpp-col">
+      <div class="wpp-colhdr you">Your faction</div>
+      <div class="wpp-field">
+        <label>Enlisted members <span class="wpp-sub">(10–100)</span></label>
+        <input class="wpp-input" id="wpp-enl" type="number" min="10" max="100" step="1" value="${s.enlisted}">
+      </div>
+      <div class="wpp-field">
+        <label>War score <span class="wpp-sub">for an in/post-war prediction</span></label>
+        <input class="wpp-input" id="wpp-score" type="number" min="0" step="1" placeholder="blank = pre-war" value="${s.score}">
+      </div>
+      <div class="wpp-field">
+        <label>Members with ≥10 hits <span class="wpp-sub">your fighters</span></label>
+        <input class="wpp-input" id="wpp-hit" type="number" min="0" max="100" step="1" value="${s.hitters}">
+        <span class="wpp-sub" id="wpp-pct"></span>
+      </div>
     </div>
-    <div class="wpp-field">
-      <label>Your war score <span class="wpp-sub">for an in/post-war prediction</span></label>
-      <input class="wpp-input" id="wpp-score" type="number" min="0" step="1" placeholder="leave blank for pre-war estimate" value="${s.score}">
-    </div>
-    <div class="wpp-field">
-      <label>Opponent war score <span class="wpp-sub">needed for the accurate model</span></label>
-      <input class="wpp-input" id="wpp-oppscore" type="number" min="0" step="1" placeholder="leave blank for pre-war estimate" value="${s.oppScore}">
-    </div>
-    <div class="wpp-field">
-      <label>Your members with ≥10 war hits <span class="wpp-sub">your fighters</span></label>
-      <input class="wpp-input" id="wpp-hit" type="number" min="0" max="100" step="1" value="${s.hitters}">
-      <span class="wpp-sub" id="wpp-pct"></span>
-    </div>
-    <div class="wpp-field">
-      <label>Opponent members with ≥10 hits <span class="wpp-sub">their fighters — used with scores</span></label>
-      <input class="wpp-input" id="wpp-opphit" type="number" min="0" max="100" step="1" value="${s.oppHitters}">
+    <div class="wpp-col">
+      <div class="wpp-colhdr opp">Opponent</div>
+      <div class="wpp-field">
+        <label>War score <span class="wpp-sub">needed for the accurate model</span></label>
+        <input class="wpp-input" id="wpp-oppscore" type="number" min="0" step="1" placeholder="blank = pre-war" value="${s.oppScore}">
+      </div>
+      <div class="wpp-field">
+        <label>Members with ≥10 hits <span class="wpp-sub">their fighters — used with scores</span></label>
+        <input class="wpp-input" id="wpp-opphit" type="number" min="0" max="100" step="1" value="${s.oppHitters}">
+      </div>
     </div>
   </div>
 </div>
